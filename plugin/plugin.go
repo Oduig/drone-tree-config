@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path"
 	"regexp"
 	"strconv"
@@ -11,11 +12,11 @@ import (
 
 	"github.com/drone/drone-go/drone"
 	"github.com/drone/drone-go/plugin/config"
-
-	"github.com/google/go-github/github"
+	"github.com/drone/go-scm/scm"
+	"github.com/drone/go-scm/scm/driver/github"
+	"github.com/drone/go-scm/scm/transport"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/oauth2"
 	"gopkg.in/yaml.v2"
 )
 
@@ -47,38 +48,41 @@ type (
 	request struct {
 		*config.Request
 		UUID   uuid.UUID
-		Client *github.Client
+		Client *scm.Client
 	}
 )
 
 var dedupRegex = regexp.MustCompile(`(?ms)(---[\s]*){2,}`)
 
-// Find is called by dorne
+// Find is called by drone
 func (p *plugin) Find(ctx context.Context, droneRequest *config.Request) (*drone.Config, error) {
-	uuid := uuid.New()
-	logrus.Infof("%s %s/%s started", uuid, droneRequest.Repo.Namespace, droneRequest.Repo.Name)
-	defer logrus.Infof("%s finished", uuid)
+	requestUuid := uuid.New()
+	logrus.Infof("%s %s/%s started", requestUuid, droneRequest.Repo.Namespace, droneRequest.Repo.Name)
+	defer logrus.Infof("%s finished", requestUuid)
 
-	// connect to github
-	trans := oauth2.NewClient(ctx, oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: p.token},
-	))
-	var client *github.Client
+	// connect to SCM
+	var client *scm.Client
 	if p.server == "" {
-		client = github.NewClient(trans)
+		client = github.NewDefault()
 	} else {
 		var err error
-		client, err = github.NewEnterpriseClient(p.server, p.server, trans)
+		client, err = github.New(p.server)
 		if err != nil {
-			logrus.Errorf("%s Unable to connect to Github: '%v'", uuid, err)
+			logrus.Errorf("%s Unable to connect to SCM: '%v'", requestUuid, err)
 			return nil, err
 		}
 	}
 
-	req := request{droneRequest, uuid, client}
+	client.Client = &http.Client{
+		Transport: &transport.BearerToken{
+			Token: p.token,
+		},
+	}
+
+	req := request{droneRequest, requestUuid, client}
 
 	// get changed files
-	changedFiles, err := p.getGithubChanges(ctx, &req)
+	changedFiles, err := p.getScmChanges(ctx, &req)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +90,7 @@ func (p *plugin) Find(ctx context.Context, droneRequest *config.Request) (*drone
 	// get drone.yml for changed files or all of them if no changes/cron
 	configData := ""
 	if changedFiles != nil {
-		configData, err = p.getGithubConfigData(ctx, &req, changedFiles)
+		configData, err = p.getScmConfigData(ctx, &req, changedFiles)
 	} else if req.Build.Trigger == "@cron" {
 		logrus.Warnf("%s @cron, rebuilding all", req.UUID)
 		configData, err = p.getAllConfigData(ctx, &req, "/", 0)
@@ -110,8 +114,8 @@ func (p *plugin) Find(ctx context.Context, droneRequest *config.Request) (*drone
 	return &drone.Config{Data: configData}, nil
 }
 
-// getGithubChanges tries to get a list of changed files from github
-func (p *plugin) getGithubChanges(ctx context.Context, req *request) ([]string, error) {
+// getScmChanges tries to get a list of changed files from scm
+func (p *plugin) getScmChanges(ctx context.Context, req *request) ([]string, error) {
 	var changedFiles []string
 
 	if req.Build.Trigger == "@cron" {
@@ -124,14 +128,14 @@ func (p *plugin) getGithubChanges(ctx context.Context, req *request) ([]string, 
 			logrus.Errorf("%s unable to get pull request id %v", req.UUID, err)
 			return nil, err
 		}
-		opts := github.ListOptions{}
-		files, _, err := req.Client.PullRequests.ListFiles(ctx, req.Repo.Namespace, req.Repo.Name, pullRequestID, &opts)
+		opts := scm.ListOptions{}
+		files, _, err := req.Client.PullRequests.ListChanges(ctx, req.Repo.Slug, pullRequestID, opts)
 		if err != nil {
 			logrus.Errorf("%s unable to fetch diff for Pull request %v", req.UUID, err)
 			return nil, err
 		}
 		for _, file := range files {
-			changedFiles = append(changedFiles, *file.Filename)
+			changedFiles = append(changedFiles, file.Path)
 		}
 	} else {
 		// use diff to get changed files
@@ -139,13 +143,15 @@ func (p *plugin) getGithubChanges(ctx context.Context, req *request) ([]string, 
 		if before == "0000000000000000000000000000000000000000" || before == "" {
 			before = fmt.Sprintf("%s~1", req.Build.After)
 		}
-		changes, _, err := req.Client.Repositories.CompareCommits(ctx, req.Repo.Namespace, req.Repo.Name, before, req.Build.After)
+		opts := scm.ListOptions{}
+		// TODO verify that ListChanges is functionally equivalent to the /compare API
+		changes, _, err := req.Client.Git.ListChanges(ctx, req.Repo.Slug, req.Build.After, opts)
 		if err != nil {
 			logrus.Errorf("%s unable to fetch diff: '%v'", req.UUID, err)
 			return nil, err
 		}
-		for _, file := range changes.Files {
-			changedFiles = append(changedFiles, *file.Filename)
+		for _, file := range changes {
+			changedFiles = append(changedFiles, file.Path)
 		}
 	}
 
@@ -158,23 +164,23 @@ func (p *plugin) getGithubChanges(ctx context.Context, req *request) ([]string, 
 	return changedFiles, nil
 }
 
-// getGithubFile downloads a file from github
-func (p *plugin) getGithubFile(ctx context.Context, req *request, file string) (content string, err error) {
+// getScmFile downloads a file from scm
+func (p *plugin) getScmFile(ctx context.Context, req *request, file string) (content string, err error) {
 	logrus.Debugf("%s checking %s/%s %s", req.UUID, req.Repo.Namespace, req.Repo.Name, file)
-	ref := github.RepositoryContentGetOptions{Ref: req.Build.After}
-	data, _, _, err := req.Client.Repositories.GetContents(ctx, req.Repo.Namespace, req.Repo.Name, file, &ref)
+
+	data, _, err := req.Client.Contents.Find(ctx, req.Repo.Slug, file, req.Build.After)
 	if data == nil {
 		err = fmt.Errorf("failed to get %s: is not a file", file)
 	}
 	if err != nil {
 		return "", err
 	}
-	return data.GetContent()
+	return string(data.Data), nil
 }
 
-// getGithubDroneConfig downloads a drone config and validates it
-func (p *plugin) getGithubDroneConfig(ctx context.Context, req *request, file string) (configData string, critical bool, err error) {
-	fileContent, err := p.getGithubFile(ctx, req, file)
+// getScmDroneConfig downloads a drone config and validates it
+func (p *plugin) getScmDroneConfig(ctx context.Context, req *request, file string) (configData string, critical bool, err error) {
+	fileContent, err := p.getScmFile(ctx, req, file)
 	if err != nil {
 		logrus.Debugf("%s skipping: unable to load file: %s %v", req.UUID, file, err)
 		return "", false, err
@@ -196,8 +202,8 @@ func (p *plugin) getGithubDroneConfig(ctx context.Context, req *request, file st
 	return fileContent, false, nil
 }
 
-// getGithubConfigData scans a repository based on the changed files
-func (p *plugin) getGithubConfigData(ctx context.Context, req *request, changedFiles []string) (configData string, err error) {
+// getScmConfigData scans a repository based on the changed files
+func (p *plugin) getScmConfigData(ctx context.Context, req *request, changedFiles []string) (configData string, err error) {
 	// collect drone.yml files
 	configData = ""
 	cache := map[string]bool{}
@@ -222,7 +228,7 @@ func (p *plugin) getGithubConfigData(ctx context.Context, req *request, changedF
 			}
 
 			// download file from git
-			fileContent, critical, err := p.getGithubDroneConfig(ctx, req, file)
+			fileContent, critical, err := p.getScmDroneConfig(ctx, req, file)
 			if err != nil {
 				if critical {
 					return "", err
@@ -243,8 +249,7 @@ func (p *plugin) getGithubConfigData(ctx context.Context, req *request, changedF
 
 // getAllConfigData searches for all or fist 'drone.yml' in the repo
 func (p *plugin) getAllConfigData(ctx context.Context, req *request, dir string, depth int) (configData string, err error) {
-	ref := github.RepositoryContentGetOptions{Ref: req.Build.After}
-	_, ls, _, err := req.Client.Repositories.GetContents(ctx, req.Repo.Namespace, req.Repo.Name, dir, &ref)
+	ls, _, err := req.Client.Contents.Find(ctx, req.Repo.Slug, dir, req.Build.After)
 	if err != nil {
 		return "", err
 	}
@@ -257,26 +262,29 @@ func (p *plugin) getAllConfigData(ctx context.Context, req *request, dir string,
 
 	// check recursivly for drone.yml
 	configData = ""
-	for _, f := range ls {
-		var fileContent string
-		if *f.Type == "dir" {
-			fileContent, _ = p.getAllConfigData(ctx, req, *f.Path, depth)
-		} else if *f.Type == "file" && *f.Name == req.Repo.Config {
-			var critical bool
-			fileContent, critical, err = p.getGithubDroneConfig(ctx, req, *f.Path)
-			if critical {
-				return "", err
-			}
-		}
-		// append
-		configData = p.droneConfigAppend(configData, fileContent)
-		if !p.concat {
-			logrus.Infof("%s concat is disabled. Using just first .drone.yml.", req.UUID)
-			break
-		}
-	}
 
-	return configData, nil
+	// TODO this will always crash because go-scm cannot handle a /contents request on a directory
+	err2 := errors.New(string(ls.Data))
+	//for _, f := range ls.Data {
+	//	var fileContent string
+	//	if f. == "dir" {
+	//		fileContent, _ = p.getAllConfigData(ctx, req, *f.Path, depth)
+	//	} else if *f.Type == "file" && *f.Name == req.Repo.Config {
+	//		var critical bool
+	//		fileContent, critical, err = p.getScmDroneConfig(ctx, req, *f.Path)
+	//		if critical {
+	//			return "", err
+	//		}
+	//	}
+	//	// append
+	//	configData = p.droneConfigAppend(configData, fileContent)
+	//	if !p.concat {
+	//		logrus.Infof("%s concat is disabled. Using just first .drone.yml.", req.UUID)
+	//		break
+	//	}
+	//}
+
+	return configData, err2
 
 }
 

@@ -18,8 +18,8 @@ type (
 		Debug    bool   `envconfig:"PLUGIN_DEBUG"`
 		Address  string `envconfig:"PLUGIN_ADDRESS" default:":3000"`
 		Secret   string `envconfig:"PLUGIN_SECRET"`
-		Token    string `envconfig:"GITHUB_TOKEN"`
-		Server   string `envconfig:"GITHUB_SERVER"`
+		Token    string `envconfig:"SCM_TOKEN"`
+		Server   string `envconfig:"SCM_SERVER"`
 	}
 )
 
@@ -36,7 +36,7 @@ func main() {
 		logrus.Fatalln("missing secret key")
 	}
 	if spec.Token == "" {
-		logrus.Warnln("missing github token")
+		logrus.Warnln("missing scm token")
 	}
 	if spec.Address == "" {
 		spec.Address = ":3000"

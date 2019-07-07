@@ -4,10 +4,11 @@ go 1.12
 
 require (
 	github.com/drone/drone-go v1.0.4
-	github.com/google/go-github v17.0.0+incompatible
+	github.com/drone/go-scm v1.5.0
 	github.com/google/go-querystring v1.0.0 // indirect
 	github.com/google/uuid v1.1.1
 	github.com/kelseyhightower/envconfig v1.3.0
+	github.com/nbio/st v0.0.0-20140626010706-e9e8d9816f32 // indirect
 	github.com/sirupsen/logrus v1.4.1
 	golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3 // indirect
 	golang.org/x/oauth2 v0.0.0-20190402181905-9f3314589c9a

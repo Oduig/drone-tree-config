@@ -1,3 +1,13 @@
+# Disclaimer
+
+This is a fork of drone-tree-config attempting to add other SCM systems to the plugin.
+It is not yet finished so it will not work if you try to use it.
+
+Issues I ran into during implementation:
+
+0. The go-scm library cannot list directory contents, only files.
+0. The go-scm library cannot call the compare API yet. 
+
 # Drone Tree Config
 
 This is a Drone extension to support mono repositories with multiple `.drone.yml`.
@@ -8,7 +18,7 @@ There is an official Docker image: https://hub.docker.com/r/bitsbeats/drone-tree
 
 ## Limitations
 
-Currently supports only Github.
+Currently supports only repositories supported by [go-scm](https://github.com/drone/go-scm).
 
 ## Usage
 
@@ -20,8 +30,8 @@ Environment variables:
 - `PLUGIN_DEBUG`: Set this to `true` to enable debug messages.
 - `PLUGIN_ADDRESS`: Listen address for the plugins webserver. Defaults to `:3000`.
 - `PLUGIN_SECRET`: Shared secret with drone. You can generate the token using `openssl rand -hex 16`.
-- `GITHUB_TOKEN`: Github personal access token. Only needs repo rights. See [here][1].
-- `GITHUB_SERVER`: Custom Github server for Github Enterprise
+- `SCM_TOKEN`: SCM personal access token. Only needs repo rights. See [here][1].
+- `SCM_SERVER`: Custom SCM server for Github Enterprise
 
 If `PLUGIN_CONCAT` is not set, the first `.drone.yml` will be used.
 
@@ -62,9 +72,9 @@ services:
       - PLUGIN_CONCAT=true
       - PLUGIN_FALLBACK=true
       - PLUGIN_SECRET=<SECRET>
-      - GITHUB_TOKEN=<GITHUB_TOKEN>
+      - SCM_TOKEN=<SCM_TOKEN>
 ```
 
-Edit the Secrets (`***`), `<SECRET>` and `<GITHUB_TOKEN>` to your needs. `<SECRET>` is used between Drone and drone-tree-config.
+Edit the Secrets (`***`), `<SECRET>` and `<SCM_TOKEN>` to your needs. `<SECRET>` is used between Drone and drone-tree-config. `<SCM_TOKEN>` is an access token for e.g. GitHub or BitBucket.
 
 [1]: https://help.github.com/en/articles/creating-a-personal-access-token-for-the-command-line

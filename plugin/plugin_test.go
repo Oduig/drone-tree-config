@@ -171,6 +171,11 @@ func testMux() *http.ServeMux {
 			f, _ := os.Open("testdata/compare.json")
 			_, _ = io.Copy(w, f)
 		})
+	mux.HandleFunc("/repos/foosinn/dronetest/commits/8ecad91991d5da985a2a8dd97cc19029dc1c2899",
+		func(w http.ResponseWriter, r *http.Request) {
+			f, _ := os.Open("testdata/compare.json")
+			_, _ = io.Copy(w, f)
+		})
 	mux.HandleFunc("/repos/foosinn/dronetest/contents/a/b/.drone.yml",
 		func(w http.ResponseWriter, r *http.Request) {
 			f, _ := os.Open("testdata/a_b_.drone.yml.json")
